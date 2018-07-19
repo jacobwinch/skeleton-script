@@ -1,3 +1,4 @@
+import java.time.LocalDate
 import java.util.concurrent.TimeUnit
 import Config.ZuoraConfig
 import okhttp3._
@@ -21,29 +22,38 @@ object ZuoraService extends Logging {
       .url(s"${config.baseUrl}/$route")
   }
 
-  case class DefaultPaymentMethod(id: String, paymentMethodType: String)
+  case class Subscription(name: String, currentTerm: Int, currentTermPeriodType: String, status: String, ratePlans: List[RatePlan])
 
-  case class BasicAccountInfo(id: String, balance: Double, defaultPaymentMethod: DefaultPaymentMethod)
+  case class RatePlan(productName: String, ratePlanCharges: List[RatePlanCharge])
 
-  case class AccountSummary(basicInfo: BasicAccountInfo, success: Boolean)
+  case class RatePlanCharge(name: String, chargedThroughDate: Option[LocalDate])
 
-  implicit val defaultPaymentMethodReads: Reads[DefaultPaymentMethod] = (
-    (JsPath \ "id").read[String] and
-    (JsPath \ "paymentMethodType").read[String]
-  )(DefaultPaymentMethod.apply _)
+  case class UpdateResult(success: Boolean, subscriptionId: String)
 
-  implicit val basicAccountInfoReads: Reads[BasicAccountInfo] = (
-    (JsPath \ "id").read[String] and
-    (JsPath \ "balance").read[Double] and
-    (JsPath \ "defaultPaymentMethod").read[DefaultPaymentMethod]
-  )(BasicAccountInfo.apply _)
+  implicit val ratePlanChargeReads: Reads[RatePlanCharge] = (
+    (JsPath \ "name").read[String] and
+    (JsPath \ "chargedThroughDate").readNullable[LocalDate]
+  )(RatePlanCharge.apply _)
 
-  implicit val accountSummaryReads: Reads[AccountSummary] = (
-    (JsPath \ "basicInfo").read[BasicAccountInfo] and
-    (JsPath \ "success").read[Boolean]
-  )(AccountSummary.apply _)
+  implicit val ratePlanReads: Reads[RatePlan] = (
+    (JsPath \ "productName").read[String] and
+    (JsPath \ "ratePlanCharges").read[List[RatePlanCharge]]
+  )(RatePlan.apply _)
 
-  def convertResponseToCaseClass[T](accountId: String, response: Response)(implicit r: Reads[T]): String \/ T = {
+  implicit val subscriptionReads: Reads[Subscription] = (
+    (JsPath \ "subscriptionNumber").read[String] and
+    (JsPath \ "currentTerm").read[Int] and
+    (JsPath \ "currentTermPeriodType").read[String] and
+    (JsPath \ "status").read[String] and
+    (JsPath \ "ratePlans").read[List[RatePlan]]
+  )(Subscription.apply _)
+
+  implicit val amendmentResultReads: Reads[UpdateResult] = (
+    (JsPath \ "success").read[Boolean] and
+    (JsPath \ "subscriptionId").read[String]
+  )(UpdateResult.apply _)
+
+  def convertResponseToCaseClass[T](response: Response)(implicit r: Reads[T]): String \/ T = {
     if (response.isSuccessful) {
       val bodyAsJson = Json.parse(response.body.string)
       bodyAsJson.validate[T] match {
@@ -57,12 +67,22 @@ object ZuoraService extends Logging {
     }
   }
 
-  def getAccountSummary(accountId: String): String \/ AccountSummary = {
-    logger.info(s"Getting account summary from Zuora for Account Id: $accountId")
-    val request = buildRequest(config, s"accounts/$accountId/summary").get().build()
+  def getSubscription(subscriptionName: String): String \/ Subscription = {
+    logInfo(subscriptionName, s"getting subscripton from Zuora")
+    val request = buildRequest(config, s"subscriptions/$subscriptionName").get().build()
     val call = restClient.newCall(request)
     val response = call.execute
-    convertResponseToCaseClass[AccountSummary](accountId, response)
+    convertResponseToCaseClass[Subscription](response)
+  }
+
+  def createAmendment(subscriptionName: String, numberOfDays: Long): String \/ UpdateResult = {
+    logInfo(subscriptionName, s"creating amendment in Zuora")
+    val body = Json.obj("currentTermPeriodType" -> "Day", "currentTerm" -> numberOfDays)
+    val requestBody = RequestBody.create(MediaType.parse("application/json"), body.toString)
+    val request = buildRequest(config, s"subscriptions/$subscriptionName").put(requestBody).build()
+    val call = restClient.newCall(request)
+    val response = call.execute
+    convertResponseToCaseClass[UpdateResult](response)
   }
 
 }
